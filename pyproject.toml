@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gpschanger"
+version = "0.1.0"
+description = "Make a USB-connected iPhone report a fake location, moving along real roads at a believable pace"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+requires-python = ">=3.14"
+dependencies = [
+    "flask>=3.0",
+    "requests>=2.31",
+    "gpxpy>=1.5,<1.7.0,!=1.6.0",
+    "pymobiledevice3>=11.3.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+# Explicit: flat-layout auto-discovery otherwise trips over tests/.
+[tool.setuptools]
+packages = ["gpschanger"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

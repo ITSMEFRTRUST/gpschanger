@@ -1,0 +1,331 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>gpschanger</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css" />
+<style>
+  :root{--bg:#0b0b0d;--fg:#e8e8ea;--dim:#9a9aa4;--edge:#26262b;--accent:#ED4AFF}
+  html,body{margin:0;height:100%;font:14px system-ui,sans-serif;
+            background:var(--bg);color:var(--fg)}
+  #map{height:calc(100% - 64px);background:var(--bg)}  /* explicit height is mandatory */
+  #bar{height:64px;display:flex;gap:14px;align-items:center;padding:0 14px;
+       box-sizing:border-box;background:var(--bg);border-top:1px solid var(--edge)}
+  label{color:var(--dim)}
+  input,select,button{background:#141419;color:var(--fg);border:1px solid var(--edge);
+                      border-radius:6px;padding:5px 9px;font:inherit}
+  input{width:64px}
+  button{cursor:pointer}
+  button:hover:not([disabled]){border-color:var(--accent);color:var(--accent)}
+  button[disabled]{opacity:.35;cursor:default}
+  #status{margin-left:auto;color:var(--dim)}
+  .live{color:var(--accent);font-weight:600}
+  #search{position:absolute;top:12px;left:56px;z-index:1200;width:320px;max-width:calc(100% - 72px)}
+  #q{width:100%;box-sizing:border-box;padding:9px 12px;background:#141419eb;
+     backdrop-filter:blur(6px);border:1px solid var(--edge);border-radius:8px;
+     color:var(--fg);font:inherit}
+  #q:focus{outline:none;border-color:var(--accent)}
+  #results{margin-top:6px;background:#141419f2;backdrop-filter:blur(6px);
+           border:1px solid var(--edge);border-radius:8px;overflow:hidden}
+  .hit{padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--edge);
+       font-size:13px;line-height:1.35}
+  .hit:last-child{border-bottom:none}
+  .hit:hover{background:#1f1f27}
+  .hit b{color:var(--fg);font-weight:600;display:block}
+  .hit span{color:var(--dim)}
+  /* Leaflet's own chrome is built for light backgrounds. */
+  .leaflet-control-layers,.leaflet-bar a,.leaflet-control-attribution{
+    background:#141419!important;color:var(--dim)!important;border-color:var(--edge)!important}
+  .leaflet-bar a{border-bottom-color:var(--edge)!important}
+  .leaflet-control-attribution a{color:var(--dim)!important}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="search">
+  <input id="q" type="text" placeholder="Search a street or place…" autocomplete="off" spellcheck="false">
+  <div id="results" hidden></div>
+</div>
+<div id="bar">
+  <label>Mode
+    <select id="mode">
+      <option value="walk" selected>Walk</option>
+      <option value="drive">Drive</option>
+    </select>
+  </label>
+  <label>Speed <input id="smin" type="number" value="4" step="0.5" min="0.5"></label>
+  <label>to <input id="smax" type="number" value="6" step="0.5" min="0.5"> km/h</label>
+  <button id="go" disabled>Go</button>
+  <button id="play" disabled>Start walking</button>
+  <button id="stop" disabled>Stop</button>
+  <button id="reset">Reset</button>
+  <span id="status"></span>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<!-- Vector basemaps. maplibre-gl must load before the Leaflet bridge. -->
+<script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.1.4/leaflet-maplibre-gl.js"></script>
+<script>
+const OSM_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
+const OFM_ATTR = OSM_ATTR + ' &copy; <a href="https://openfreemap.org">OpenFreeMap</a> &copy; <a href="https://openmaptiles.org">OpenMapTiles</a>';
+
+// Vector styles from OpenFreeMap: no API key, no rate limit, and a real
+// OpenMapTiles style rather than a flat raster -- crisp labels at any zoom.
+// Guarded because it needs WebGL; without it we fall back to raster only.
+const VECTOR_OK = typeof maplibregl !== 'undefined' && typeof L.maplibreGL === 'function';
+const vector = style => L.maplibreGL({
+  style: `https://tiles.openfreemap.org/styles/${style}`,
+  attribution: OFM_ATTR,
+});
+
+const BASE_LAYERS = {};
+if (VECTOR_OK) {
+  BASE_LAYERS['Dark']    = vector('dark');
+  BASE_LAYERS['Streets'] = vector('liberty');
+}
+BASE_LAYERS['Satellite'] = L.tileLayer(
+  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+  {maxZoom:19, attribution:'Imagery &copy; Esri, Maxar, Earthstar Geographics'});
+// Raster dark, in case WebGL is unavailable or the vector tiles are down.
+BASE_LAYERS['Dark (raster)'] = L.tileLayer(
+  'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+  {subdomains:'abcd', maxZoom:20, detectRetina:true,
+   attribution: OSM_ATTR + ' &copy; <a href="https://carto.com/attributions">CARTO</a>'});
+BASE_LAYERS['OSM'] = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+  {maxZoom:19, attribution: OSM_ATTR});
+
+const DEFAULT_LAYER = VECTOR_OK ? 'Dark' : 'Dark (raster)';
+
+// Remember the basemap and where you were looking. Purely local convenience;
+// wrapped because storage throws outright in some privacy configurations.
+function remembered(key, fallback){
+  try { const v = localStorage.getItem(key); return v === null ? fallback : JSON.parse(v); }
+  catch { return fallback; }
+}
+function remember(key, value){
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+}
+
+const savedView = remembered('gpschanger.view', {lat: 51.5074, lng: -0.1278, zoom: 14});
+const savedLayer = remembered('gpschanger.layer', DEFAULT_LAYER);
+
+const map = L.map('map').setView([savedView.lat, savedView.lng], savedView.zoom);
+(BASE_LAYERS[savedLayer] || BASE_LAYERS[DEFAULT_LAYER]).addTo(map);
+L.control.layers(BASE_LAYERS, null, {position: 'topright'}).addTo(map);
+
+map.on('baselayerchange', e => remember('gpschanger.layer', e.name));
+map.on('moveend zoomend', () => {
+  const c = map.getCenter().wrap();
+  remember('gpschanger.view', {lat: c.lat, lng: c.lng, zoom: map.getZoom()});
+});
+
+let A = null, B = null, line = null, routeId = null, plan = null, live = null;
+let runMode = 'walk';
+
+// Speed bands that make sense per profile. Switching mode rewrites the band
+// and drops any planned route, because the route itself came from a different
+// OSRM profile and would no longer match what is on screen.
+const MODE_DEFAULTS = {walk: {min: 4, max: 6, step: 0.5},
+                       drive: {min: 40, max: 90, step: 5}};
+const $ = id => document.getElementById(id);
+
+function refresh(){
+  $('go').disabled = !(A && B);
+  $('play').disabled = !routeId;
+  if (!A)      $('status').textContent = 'Click the map to set point A.';
+  else if (!B) $('status').textContent = 'Click again to set point B.';
+}
+
+function marker(latlng, label){
+  const m = L.marker(latlng, {draggable:true}).addTo(map);
+  m.bindTooltip(label, {permanent:true, direction:'top'});
+  m.on('dragend', () => { clearLine(); routeId = null; plan = null; refresh(); });
+  return m;
+}
+function clearLine(){ if (line){ map.removeLayer(line); line = null; } }
+function reset(){
+  if (A) map.removeLayer(A);
+  if (B) map.removeLayer(B);
+  if (live){ map.removeLayer(live); live = null; }
+  A = B = null; routeId = null; plan = null; clearLine(); refresh();
+}
+
+map.on('click', e => {
+  if (A && B)  { reset(); A = marker(e.latlng, 'A'); }
+  else if (!A) { A = marker(e.latlng, 'A'); }
+  else         { B = marker(e.latlng, 'B'); }
+  refresh();
+});
+
+$('reset').onclick = reset;
+
+// --- place search --------------------------------------------------------
+// Debounced rather than per-keystroke: Photon is built for typeahead, but
+// there is no reason to hammer a free service while someone is mid-word.
+const searchBox = document.getElementById('search');
+L.DomEvent.disableClickPropagation(searchBox);
+L.DomEvent.disableScrollPropagation(searchBox);
+
+let searchTimer = null, searchPin = null;
+
+function hideResults(){ $('results').hidden = true; $('results').innerHTML = ''; }
+
+function showResults(items){
+  const box = $('results');
+  box.innerHTML = '';
+  if (!items.length){
+    box.innerHTML = '<div class="hit"><span>No matches</span></div>';
+  } else {
+    for (const it of items){
+      const el = document.createElement('div');
+      el.className = 'hit';
+      el.innerHTML = `<b></b><span></span>`;
+      el.querySelector('b').textContent = it.name || '';
+      el.querySelector('span').textContent = it.label || '';
+      el.onclick = () => goTo(it);
+      box.appendChild(el);
+    }
+  }
+  box.hidden = false;
+}
+
+function goTo(place){
+  if (place.lat === undefined) return;
+  map.flyTo([place.lat, place.lon], Math.max(map.getZoom(), 16), {duration: 0.8});
+  if (searchPin) map.removeLayer(searchPin);
+  searchPin = L.circleMarker([place.lat, place.lon],
+    {radius:7, color:'#ED4AFF', fillColor:'#ED4AFF', fillOpacity:.35, weight:2}).addTo(map);
+  hideResults();
+}
+
+async function runSearch(q){
+  if (!q) return;
+  const c = map.getCenter().wrap();
+  try {
+    const r = await fetch(`/api/search?q=${encodeURIComponent(q)}&lat=${c.lat}&lon=${c.lng}`);
+    const text = await r.text();
+    let d; try { d = JSON.parse(text); } catch { d = {error: `HTTP ${r.status}`}; }
+    if (!r.ok) throw new Error(d.error || 'search failed');
+    showResults(d.results || []);
+  } catch (err) {
+    $('results').innerHTML = '';
+    const el = document.createElement('div');
+    el.className = 'hit';
+    el.innerHTML = '<span></span>';
+    el.querySelector('span').textContent = 'Error: ' + err.message;
+    $('results').appendChild(el);
+    $('results').hidden = false;
+  }
+}
+
+$('q').addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  const q = $('q').value.trim();
+  if (q.length < 3){ hideResults(); return; }
+  searchTimer = setTimeout(() => runSearch(q), 350);
+});
+$('q').addEventListener('keydown', e => {
+  if (e.key === 'Enter'){ clearTimeout(searchTimer); runSearch($('q').value.trim()); }
+  if (e.key === 'Escape'){ hideResults(); $('q').blur(); }
+});
+map.on('click', hideResults);
+
+$('mode').onchange = () => {
+  const d = MODE_DEFAULTS[$('mode').value];
+  $('smin').value = d.min; $('smax').value = d.max;
+  $('smin').step = d.step; $('smax').step = d.step;
+  routeId = null; plan = null; clearLine(); refresh();
+};
+
+// Never call r.json() blind. A Flask 500 is an HTML page, and parsing that
+// throws `Unexpected token '<', "<!doctype "... is not valid JSON`, which
+// hides whatever the server actually said.
+async function postJSON(url, body){
+  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'},
+                              body: JSON.stringify(body || {})});
+  const text = await r.text();
+  let d;
+  try { d = JSON.parse(text); }
+  catch { d = {error: `server returned ${r.status} ${r.statusText} (not JSON)`}; }
+  return {ok: r.ok, d};
+}
+
+$('go').onclick = async () => {
+  $('go').disabled = true; $('status').textContent = 'Routing…';
+  try {
+    // .wrap() folds longitude back into +/-180. Without it, panning across a
+    // world copy sends a longitude a full 360 degrees off and OSRM answers 400.
+    const a = A.getLatLng().wrap(), b = B.getLatLng().wrap();
+    const {ok, d} = await postJSON('/api/route', {
+      a:[a.lat, a.lng],
+      b:[b.lat, b.lng],
+      mode: $('mode').value,
+      speed_min_kmh: parseFloat($('smin').value),
+      speed_max_kmh: parseFloat($('smax').value)
+    });
+    if (!ok) throw new Error(d.error || 'routing failed');
+    clearLine();
+    line = L.polyline(d.coords, {color:'#ED4AFF', weight:5, opacity:.9}).addTo(map);
+    map.fitBounds(line.getBounds(), {padding:[40,40]});
+    routeId = d.route_id;
+    plan = d;
+    runMode = d.mode || 'walk';
+    const km = d.distance_m >= 1000 ? `${(d.distance_m/1000).toFixed(1)} km`
+                                    : `${d.distance_m.toFixed(0)} m`;
+    const stops = d.mode === 'drive' ? ` · ${d.stops} stop${d.stops === 1 ? '' : 's'}` : '';
+    $('status').textContent =
+      `${km} · ${(d.duration_s/60).toFixed(1)} min${stops}` + (d.note ? ` · ${d.note}` : '');
+  } catch (err) { $('status').textContent = 'Error: ' + err.message; }
+  finally { refresh(); }
+};
+
+$('play').onclick = async () => {
+  $('status').textContent = 'Opening the tunnel to the phone…';
+  const {ok, d} = await postJSON('/api/play', {route_id: routeId});
+  if (!ok) $('status').textContent = 'Error: ' + (d.error || 'could not start');
+  pollStatus();
+};
+
+$('stop').onclick = async () => {
+  await postJSON('/api/stop', {});
+  if (live){ map.removeLayer(live); live = null; }
+  $('status').textContent = 'Stopped — phone is back on real GPS.';
+  pollStatus();
+};
+
+async function pollStatus(){
+  let d;
+  try { d = await (await fetch('/api/status')).json(); } catch { return; }
+  $('stop').disabled = !d.running;
+
+  if (d.lat != null && d.running){
+    const at = [d.lat, d.lon];
+    if (live) live.setLatLng(at);
+    else live = L.circleMarker(at, {radius:8, color:'#b91c1c', fillColor:'#ef4444',
+                                    fillOpacity:.9, weight:2}).addTo(map);
+  }
+
+  if (d.error){
+    $('status').textContent = 'Error: ' + d.error;
+  } else if (d.state === 'walking'){
+    const verb = runMode === 'drive' ? 'Driving' : 'Walking';
+    $('status').innerHTML =
+      `<span class="live">${verb}</span> · point ${d.index + 1} / ${d.total}`;
+  } else if (d.state === 'holding'){
+    $('status').innerHTML =
+      `<span class="live">Holding at B</span> · re-sending until you press Stop`;
+  }
+}
+
+// 1s while a run is live: the driver moves the phone every second, so a
+// slower poll would make the red dot lag visibly behind the real spoof.
+setInterval(pollStatus, 1000);
+reset();
+</script>
+</body>
+</html>
