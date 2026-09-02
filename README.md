@@ -199,6 +199,20 @@ Please keep the identifying `USER_AGENT`.
 
 ---
 
+## Problems, questions, contributions
+
+Open an [issue](https://github.com/ITSMEFRTRUST/gpschanger/issues). Useful
+things to include: your iOS version and build, the `pymobiledevice3 version`
+output, and the exact error text.
+
+Pull requests are welcome. `pacer.py` is pure and fully unit-tested, so changes
+to the speed or traffic model are easy to verify — run `./venv/bin/pytest`
+before opening one.
+
+Found a security problem? Use
+[private vulnerability reporting](https://github.com/ITSMEFRTRUST/gpschanger/security/advisories/new)
+rather than a public issue.
+
 ## Legal
 
 For research and for testing your own applications. Falsifying your location
